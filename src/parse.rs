@@ -1,5 +1,8 @@
 //! Copied from https://github.com/cole14/rust-elf/tree/master
 
+use crate::abi;
+use crate::elf::header::{ElfHeader32, FileType, Machine, OsAbi};
+
 #[derive(Debug)]
 pub enum ParseError {
     /// Returned when the ELF File Header's magic bytes weren't ELF's defined
@@ -170,4 +173,151 @@ impl From<std::io::Error> for ParseError {
     fn from(err: std::io::Error) -> ParseError {
         ParseError::IOError(err)
     }
+}
+
+/// Parse ints from a little-endian byte array
+pub struct Parser<'buffer> {
+    offset: usize,
+    buffer: &'buffer [u8],
+}
+
+impl<'buffer> Parser<'buffer> {
+    pub fn new(buffer: &'buffer [u8]) -> Self {
+        Self { offset: 0, buffer }
+    }
+
+    pub fn parse_u8(&mut self) -> Result<u8, ParseError> {
+        let start = self.offset;
+        let end = self.offset + 1;
+        let value = self
+            .buffer
+            .get(start)
+            .cloned()
+            .ok_or(ParseError::SliceReadError((start, end)))?;
+        self.offset = end;
+        Ok(value)
+    }
+
+    pub fn parse_u16(&mut self) -> Result<u16, ParseError> {
+        let start = self.offset;
+        let end = self.offset + 2;
+        let slice: &[u8] = self
+            .buffer
+            .get(start..end)
+            .ok_or(ParseError::SliceReadError((start, end)))?;
+        let value = u16::from_le_bytes(slice.try_into()?);
+        self.offset = end;
+        Ok(value)
+    }
+
+    pub fn parse_u32(&mut self) -> Result<u32, ParseError> {
+        let start = self.offset;
+        let end = self.offset + 4;
+        let slice: &[u8] = self
+            .buffer
+            .get(start..end)
+            .ok_or(ParseError::SliceReadError((start, end)))?;
+        let value = u32::from_le_bytes(slice.try_into()?);
+        self.offset = end;
+        Ok(value)
+    }
+
+    pub fn skip_u8(&mut self) {
+        self.offset += 1;
+    }
+
+    pub fn skip_u16(&mut self) {
+        self.offset += 2;
+    }
+
+    pub fn skip_u32(&mut self) {
+        self.offset += 4;
+    }
+}
+
+/// Verify identification bytes at start of ELF file
+pub fn verify_e_ident(buffer: &[u8]) -> Result<(), ParseError> {
+    let magic = buffer.split_at(abi::EI_CLASS).0; // Header has e_ident bytes, then EI_CLASS
+    if magic != abi::ELFMAGIC {
+        return Err(ParseError::BadMagic([
+            magic[0], magic[1], magic[2], magic[3],
+        ]));
+    }
+
+    // We care only for ELF32,
+    // little endian
+    let class = buffer[abi::EI_CLASS];
+    if class != abi::ELFCLASS32 {
+        return Err(ParseError::UnsupportedElfClass(class));
+    }
+    let endianness = buffer[abi::EI_DATA];
+    if endianness != abi::ELFDATA2LSB {
+        return Err(ParseError::UnsupportedElfEndianness(endianness));
+    }
+
+    // Must be ELF current version
+    let specification_version = buffer[abi::EI_VERSION];
+    if specification_version != abi::EV_CURRENT {
+        return Err(ParseError::UnsupportedVersion((
+            specification_version as u64,
+            abi::EV_CURRENT as u64,
+        )));
+    }
+
+    Ok(())
+}
+
+/// Parse the interesting data from e_ident. We care about:
+/// - OSABI
+/// - ABIVERSION
+pub fn parse_e_ident(buffer: &[u8]) -> Result<(OsAbi, u8), ParseError> {
+    verify_e_ident(buffer)?;
+    let os_abi = buffer[abi::EI_OSABI];
+    let abi_version = buffer[abi::EI_ABIVERSION];
+    Ok((OsAbi(os_abi), abi_version))
+}
+
+pub fn parse_elf_header_32(buffer: &[u8]) -> Result<ElfHeader32, ParseError> {
+    let (os_abi, abi_version) = parse_e_ident(&buffer[..abi::EI_NIDENT])?;
+
+    let mut parser = Parser::new(&buffer[abi::EI_NIDENT..]);
+
+    let file_type = parser.parse_u16()?;
+    let file_type = match file_type {
+        0 => Ok(FileType::None),
+        1 => Ok(FileType::Rel),
+        2 => Ok(FileType::Exec),
+        3 => Ok(FileType::Dyn),
+        4 => Ok(FileType::Core),
+        file_type => Err(ParseError::UnsupportedFileType(file_type)),
+    }?;
+    let machine = parser.parse_u16()?;
+    let machine = Machine(machine);
+    parser.skip_u32(); // e_version, already checked
+    let entry = parser.parse_u32()?;
+    let program_header_offset = parser.parse_u32()?;
+    let section_header_offset = parser.parse_u32()?;
+    parser.skip_u32(); // flags: u32, always 0
+    let elf_header_size = parser.parse_u16()?;
+    let program_header_entry_size = parser.parse_u16()?;
+    let program_header_entries = parser.parse_u16()?;
+    let section_header_entry_size = parser.parse_u16()?;
+    let section_header_entries = parser.parse_u16()?;
+    let string_table_index = parser.parse_u16()?;
+
+    Ok(ElfHeader32 {
+        os_abi,
+        abi_version,
+        file_type,
+        machine,
+        entry,
+        program_header_offset,
+        section_header_offset,
+        elf_header_size,
+        program_header_entry_size,
+        program_header_entries,
+        section_header_entry_size,
+        section_header_entries,
+        string_table_index,
+    })
 }
