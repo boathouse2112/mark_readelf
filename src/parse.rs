@@ -1,7 +1,9 @@
 //! Copied from https://github.com/cole14/rust-elf/tree/master
 
 use crate::abi;
-use crate::elf::header::{ElfHeader32, FileType, Machine, OsAbi};
+use crate::elf::header::{ElfHeader, FileType, Machine, OsAbi};
+use crate::elf::program_header::{HeaderType, ProgramHeader};
+use crate::elf::Elf;
 
 #[derive(Debug)]
 pub enum ParseError {
@@ -183,7 +185,11 @@ pub struct Parser<'buffer> {
 
 impl<'buffer> Parser<'buffer> {
     pub fn new(buffer: &'buffer [u8]) -> Self {
-        Self { offset: 0, buffer }
+        Self::new_with_offset(buffer, 0)
+    }
+
+    pub fn new_with_offset(buffer: &'buffer [u8], offset: usize) -> Self {
+        Self { offset, buffer }
     }
 
     pub fn parse_u8(&mut self) -> Result<u8, ParseError> {
@@ -277,7 +283,7 @@ pub fn parse_e_ident(buffer: &[u8]) -> Result<(OsAbi, u8), ParseError> {
     Ok((OsAbi(os_abi), abi_version))
 }
 
-pub fn parse_elf_header_32(buffer: &[u8]) -> Result<ElfHeader32, ParseError> {
+pub fn parse_elf_header(buffer: &[u8]) -> Result<ElfHeader, ParseError> {
     let (os_abi, abi_version) = parse_e_ident(&buffer[..abi::EI_NIDENT])?;
 
     let mut parser = Parser::new(&buffer[abi::EI_NIDENT..]);
@@ -295,17 +301,17 @@ pub fn parse_elf_header_32(buffer: &[u8]) -> Result<ElfHeader32, ParseError> {
     let machine = Machine(machine);
     parser.skip_u32(); // e_version, already checked
     let entry = parser.parse_u32()?;
-    let program_header_offset = parser.parse_u32()?;
-    let section_header_offset = parser.parse_u32()?;
+    let program_header_offset = parser.parse_u32()? as usize;
+    let section_header_offset = parser.parse_u32()? as usize;
     parser.skip_u32(); // flags: u32, always 0
-    let elf_header_size = parser.parse_u16()?;
-    let program_header_entry_size = parser.parse_u16()?;
-    let program_header_entries = parser.parse_u16()?;
-    let section_header_entry_size = parser.parse_u16()?;
-    let section_header_entries = parser.parse_u16()?;
-    let string_table_index = parser.parse_u16()?;
+    let elf_header_size = parser.parse_u16()? as usize;
+    let program_header_entry_size = parser.parse_u16()? as usize;
+    let program_header_entries = parser.parse_u16()? as usize;
+    let section_header_entry_size = parser.parse_u16()? as usize;
+    let section_header_entries = parser.parse_u16()? as usize;
+    let string_table_index = parser.parse_u16()? as usize;
 
-    Ok(ElfHeader32 {
+    Ok(ElfHeader {
         os_abi,
         abi_version,
         file_type,
@@ -319,5 +325,69 @@ pub fn parse_elf_header_32(buffer: &[u8]) -> Result<ElfHeader32, ParseError> {
         section_header_entry_size,
         section_header_entries,
         string_table_index,
+    })
+}
+
+fn parse_program_header(buffer: &[u8], offset: usize) -> Result<ProgramHeader, ParseError> {
+    let mut parser = Parser::new_with_offset(buffer, offset);
+    let header_type = parser.parse_u32()?;
+    let header_type = match header_type {
+        abi::PT_NULL => Ok(HeaderType::Null),
+        abi::PT_LOAD => Ok(HeaderType::Load),
+        abi::PT_DYNAMIC => Ok(HeaderType::Dynamic),
+        abi::PT_INTERP => Ok(HeaderType::Interpreter),
+        abi::PT_NOTE => Ok(HeaderType::Note),
+        abi::PT_PHDR => Ok(HeaderType::ProgramHeaderTable),
+        abi::PT_GNU_STACK => Ok(HeaderType::GnuStack),
+        _ => Err(ParseError::UnexpectedSegmentType((0, 0))),
+    }?;
+    let offset = parser.parse_u32()?;
+    let virtual_address = parser.parse_u32()?;
+    let physical_address = parser.parse_u32()?;
+    let size_in_file = parser.parse_u32()?;
+    let size_in_memory = parser.parse_u32()?;
+    let flags = parser.parse_u32()?;
+    let alignment = parser.parse_u32()?;
+
+    Ok(ProgramHeader {
+        header_type,
+        offset,
+        virtual_address,
+        physical_address,
+        size_in_file,
+        size_in_memory,
+        flags,
+        alignment,
+    })
+}
+
+pub fn parse_program_header_table(
+    buffer: &[u8],
+    offset: usize,
+    entry_size: usize,
+    entries: usize,
+) -> Result<Vec<ProgramHeader>, ParseError> {
+    let mut result = Vec::new();
+    for entry_idx in 0..entries {
+        let ph_offset = offset + entry_size * entry_idx;
+        let ph = parse_program_header(buffer, ph_offset)?;
+        result.push(ph);
+    }
+    Ok(result)
+}
+
+pub fn parse_elf(buffer: &[u8]) -> Result<Elf, ParseError> {
+    let elf_header = parse_elf_header(buffer)?;
+
+    // Program Header Table
+    let pht_offset = elf_header.program_header_offset;
+    let pht_entry_size = elf_header.program_header_entry_size;
+    let pht_entries = elf_header.program_header_entries;
+    let program_header_table =
+        parse_program_header_table(buffer, pht_offset, pht_entry_size, pht_entries)?;
+
+    Ok(Elf {
+        header: elf_header,
+        program_header_table,
     })
 }

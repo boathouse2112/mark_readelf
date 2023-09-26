@@ -68,46 +68,42 @@ impl Display for Machine {
 
 /// Header at the start of the ELF file
 #[derive(Debug)]
-pub struct ElfHeader32 {
+pub struct ElfHeader {
     // Magic number not necessary
     pub os_abi: OsAbi,
     pub abi_version: u8,
     pub file_type: FileType,
     pub machine: Machine,
     pub entry: u32,
-    pub program_header_offset: u32,
-    pub section_header_offset: u32,
-    pub elf_header_size: u16,
-    pub program_header_entry_size: u16,
-    pub program_header_entries: u16,
-    pub section_header_entry_size: u16,
-    pub section_header_entries: u16,
-    pub string_table_index: u16,
+    pub program_header_offset: usize,     // u32
+    pub section_header_offset: usize,     // u32
+    pub elf_header_size: usize,           // u16
+    pub program_header_entry_size: usize, // u16
+    pub program_header_entries: usize,    // u16
+    pub section_header_entry_size: usize, // u16
+    pub section_header_entries: usize,    // u16
+    pub string_table_index: usize,        // u16
 }
 
-impl Display for ElfHeader32 {
+impl Display for ElfHeader {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let rows: Vec<(&str, String)> = vec![
-            (
-                "Magic",
-                "7f 45 4c 46 01 01 01 00 00 00 00 00 00 00 00 00".to_string(),
-            ),
             ("Class", "ELF32".to_string()),
             ("Data", "2's complement, little endian".to_string()),
             ("Version", "1 (current)".to_string()),
             ("OS/ABI", format!("{}", self.os_abi)),
             ("ABI Version", self.abi_version.to_string()),
-            ("Type", format!("{}", self.file_type)),
+            ("Type", format!("{0:?} ({0})", self.file_type)),
             ("Machine", format!("{}", self.machine)),
             ("Version", "0x1".to_string()),
             ("Entry point address", self.entry.to_string()),
             (
                 "Start of program headers",
-                self.program_header_offset.to_string(),
+                format!("{} (bytes into file)", self.program_header_offset),
             ),
             (
                 "Start of section headers",
-                self.section_header_offset.to_string(),
+                format!("{} (bytes into file", self.section_header_offset),
             ),
             ("Flags", "0x0".to_string()),
             (
@@ -130,20 +126,26 @@ impl Display for ElfHeader32 {
                 "Number of section headers",
                 self.section_header_entries.to_string(),
             ),
-            (
-                "Section header string table index",
-                self.string_table_index.to_string(),
-            ),
         ];
 
-        let longest_field_length = "Section header string table index: ".len();
+        let longest_field_length = "  Section header string table index: ".len() - 3; // Trust me bro
 
         writeln!(f, "ELF Header:")?;
+        writeln!(
+            f,
+            "  Magic:   7f 45 4c 46 01 01 01 00 00 00 00 00 00 00 00 00"
+        )?;
         for (field, value) in rows {
             let padding = cmp::max(longest_field_length - field.len(), 0);
             let padding = " ".repeat(padding);
             writeln!(f, "  {field}:{padding}{value}")?;
         }
+        write!(
+            f,
+            "  Section header string table index: {}",
+            self.string_table_index
+        )?;
+
         Ok(())
     }
 }
